@@ -28,8 +28,7 @@ const loginUser = async (payload: TUser) => {
 
 
     const jwtPayload = {
-        userId: user._id.toString(),
-
+        userId: user._id.toString()
     };
 
     const accessToken = createToken(
