@@ -18,7 +18,17 @@ const createBulkOrdersIntoDB = async (Payloads: TOrder[]) => {
     return result;
 };
 
-
+type TGetOrdersOptions = {
+    startDate?: string;
+    endDate?: string;
+    priceMin?: number | string;
+    email?: string;
+    phone?: string;
+    sortBy?: 'date' | 'price';
+    sortOrder?: 'asc' | 'desc';
+    before?: string;
+    after?: string;
+};
 
 const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
 
@@ -30,7 +40,15 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
             priceMin,
             email,
             phone,
+            sortBy = 'date',
+            sortOrder: rawSortOrder = 'asc',
+            before,
+            after,
         } = options || {};
+
+        // Normalize sortBy and sortOrder
+        const validSortBy = sortBy === 'price' ? 'price' : 'date';
+        const validSortOrder = rawSortOrder?.toLowerCase() === 'desc' ? 'desc' : 'asc';
 
         const match: any = {};
 
@@ -90,27 +108,30 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
 
         const TotalSales = await OrderModel.aggregate(totalSalesPipeline);
 
-       
+        // Cursor pagination for Sales array only (50 items per page)
         const limit = 50;
-        const sortDir = 1; 
-        const { before, after } = options || {};
+        const sortDir = validSortOrder === 'desc' ? -1 : 1;
         const isBackward = !!before && !after;
 
-        
+        // Build cursor match for pagination
         const paginationMatch = { ...match };
 
         const buildCursorFilter = (token: string, isAfter: boolean) => {
             try {
-                const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8')) as { v: any; id: string };
-                let val = new Date(decoded.v); // Always date sorting
+                const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8')) as { v: any; id: string; field: string };
+                let val = decoded.v;
+                const field = decoded.field || 'date';
+                
+                // Convert value to Date if sorting by date
+                if (field === 'date') val = new Date(val);
 
                 const opPrimary = (isAfter ? (sortDir === 1 ? '$gt' : '$lt') : (sortDir === 1 ? '$lt' : '$gt'));
                 const opId = opPrimary;
 
                 return {
                     $or: [
-                        { date: { [opPrimary]: val } },
-                        { date: val, _id: { [opId]: new Types.ObjectId(decoded.id) } },
+                        { [field]: { [opPrimary]: val } },
+                        { [field]: val, _id: { [opId]: new Types.ObjectId(decoded.id) } },
                     ],
                 };
             } catch (e) {
@@ -130,10 +151,10 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
             }
         }
 
-        
-        const querySortDir = isBackward ? -1 : 1;
+        // Determine query sort direction (reverse if fetching backward)
+        const querySortDir = isBackward ? -sortDir : sortDir;
         const querySort: any = {
-            date: querySortDir,
+            [validSortBy]: querySortDir,
             _id: querySortDir
         };
 
@@ -159,8 +180,10 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
 
         if (pageDocs.length > 0) {
             const encodeToken = (item: any) => {
-                const val = item.date instanceof Date ? item.date.toISOString() : new Date(item.date).toISOString();
-                return Buffer.from(JSON.stringify({ v: val, id: item._id.toString() })).toString('base64');
+                const val = validSortBy === 'date'
+                    ? (item.date instanceof Date ? item.date.toISOString() : new Date(item.date).toISOString())
+                    : item.price;
+                return Buffer.from(JSON.stringify({ v: val, id: item._id.toString(), field: validSortBy })).toString('base64');
             };
 
             const firstDoc = pageDocs[0];
