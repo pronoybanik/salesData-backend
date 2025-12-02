@@ -4,6 +4,7 @@ import { TUser } from "./auth.interface";
 import { UserModel } from "./auth.module";
 import httpStatus from 'http-status';
 import { createToken } from "./auth.utils";
+import type { StringValue } from 'ms';
 
 const createUserIntoDB = async (Payload: TUser) => {
     const result = await UserModel.create(Payload)
@@ -30,11 +31,12 @@ const loginUser = async (payload: TUser) => {
     const jwtPayload = {
         userId: user._id.toString()
     };
+    const expiresIn = config.jwt_access_expires_in as unknown as StringValue;
 
     const accessToken = createToken(
         jwtPayload,
         config.jwt_access_secret as string,
-        config.jwt_access_expires_in as string,
+        expiresIn
     );
 
     return {

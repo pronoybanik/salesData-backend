@@ -6,5 +6,6 @@ router.get('/', OrderController.getAllOrders);
 
 router.post("/", OrderController.createOrder);
 
+router.post("/bulk", OrderController.createBulkOrders);
 
-export const SalesRoutes = router;
+export const SalesRoutes = router;  

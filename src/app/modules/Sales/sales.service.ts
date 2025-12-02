@@ -2,6 +2,7 @@ import { OrderModel } from "./salers.module";
 import { TOrder } from "./sales.interface";
 import AppError from '../../middlewares/AppError';
 import httpStatus from 'http-status';
+import { Types } from 'mongoose';
 
 
 const createOrderIntoDB = async (Payload: TOrder) => {
@@ -9,15 +10,15 @@ const createOrderIntoDB = async (Payload: TOrder) => {
     return result;
 };
 
-type TGetOrdersOptions = {
-    startDate?: string;
-    endDate?: string;
-    priceMin?: number | string;
-    email?: string;
-    phone?: string;
-    sortBy?: string;
-    sortOrder?: 'asc' | 'desc' | string;
+const createBulkOrdersIntoDB = async (Payloads: TOrder[]) => {
+    if (!Array.isArray(Payloads) || Payloads.length === 0) {
+        throw new AppError(httpStatus.BAD_REQUEST, 'Payload must be a non-empty array of orders');
+    }
+    const result = await OrderModel.insertMany(Payloads);
+    return result;
 };
+
+
 
 const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
 
@@ -29,8 +30,6 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
             priceMin,
             email,
             phone,
-            sortBy = 'date',
-            sortOrder = 'dsc',
         } = options || {};
 
         const match: any = {};
@@ -83,25 +82,69 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
                     totalSale: { $sum: '$price' },
                 },
             },
-            // sort by day (ascending by default)
-            { $sort: { _id: sortOrder === 'desc' ? -1 : 1 } },
+            // sort by day ascending
+            { $sort: { _id: 1 } },
             // project as required: day + totalSale
             { $project: { _id: 0, day: '$_id', totalSale: 1 } }
         );
 
         const TotalSales = await OrderModel.aggregate(totalSalesPipeline);
 
-        // Determine sorting for the documents list
-        const sortDir = sortOrder === 'desc' ? -1 : 1;
-        const sortObj: any = {};
-        // default to date field
-        sortObj[sortBy || 'date'] = sortDir;
-        // ensure deterministic order by _id as tiebreaker
-        sortObj._id = 1;
+       
+        const limit = 50;
+        const sortDir = 1; 
+        const { before, after } = options || {};
+        const isBackward = !!before && !after;
 
-        const salesDocs = await OrderModel.find(match).sort(sortObj).exec();
+        
+        const paginationMatch = { ...match };
 
-        const Sales = salesDocs.map((s: any) => ({
+        const buildCursorFilter = (token: string, isAfter: boolean) => {
+            try {
+                const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8')) as { v: any; id: string };
+                let val = new Date(decoded.v); // Always date sorting
+
+                const opPrimary = (isAfter ? (sortDir === 1 ? '$gt' : '$lt') : (sortDir === 1 ? '$lt' : '$gt'));
+                const opId = opPrimary;
+
+                return {
+                    $or: [
+                        { date: { [opPrimary]: val } },
+                        { date: val, _id: { [opId]: new Types.ObjectId(decoded.id) } },
+                    ],
+                };
+            } catch (e) {
+                return null;
+            }
+        };
+
+        if (after) {
+            const cursorFilter = buildCursorFilter(after, true);
+            if (cursorFilter) {
+                paginationMatch.$and = paginationMatch.$and ? [...paginationMatch.$and, cursorFilter] : [cursorFilter];
+            }
+        } else if (before) {
+            const cursorFilter = buildCursorFilter(before, false);
+            if (cursorFilter) {
+                paginationMatch.$and = paginationMatch.$and ? [...paginationMatch.$and, cursorFilter] : [cursorFilter];
+            }
+        }
+
+        
+        const querySortDir = isBackward ? -1 : 1;
+        const querySort: any = {
+            date: querySortDir,
+            _id: querySortDir
+        };
+
+       
+        const docs = await OrderModel.find(paginationMatch).sort(querySort).limit(limit + 1).exec();
+
+        const hasMore = docs.length > limit;
+        let pageDocs = hasMore ? docs.slice(0, limit) : docs;
+       
+
+        const Sales = pageDocs.map((s: any) => ({
             _id: s._id.toString(),
             date: s.date instanceof Date ? s.date.toISOString() : new Date(s.date).toISOString(),
             price: s.price,
@@ -110,10 +153,31 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
             __v: s.__v,
         }));
 
+    
+        let beforeToken = null;
+        let afterToken = null;
+
+        if (pageDocs.length > 0) {
+            const encodeToken = (item: any) => {
+                const val = item.date instanceof Date ? item.date.toISOString() : new Date(item.date).toISOString();
+                return Buffer.from(JSON.stringify({ v: val, id: item._id.toString() })).toString('base64');
+            };
+
+            const firstDoc = pageDocs[0];
+            const lastDoc = pageDocs[pageDocs.length - 1];
+            beforeToken = encodeToken(firstDoc);
+            afterToken = encodeToken(lastDoc);
+        }
+
         return {
             results: {
                 TotalSales,
                 Sales,
+            },
+            pagination: {
+                before: beforeToken,
+                after: afterToken,
+                hasMore,
             },
         };
     } catch (error: any) {
@@ -123,6 +187,7 @@ const getAllOrdersFromDB = async (options?: TGetOrdersOptions) => {
 
 export const OrderService = {
     createOrderIntoDB,
+    createBulkOrdersIntoDB,
     getAllOrdersFromDB
 };
 
